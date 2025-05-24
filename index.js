@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { Client, Events, SlashCommandBuilder, GatewayIntentBits } from 'discord.js';
+import { Client, Events, SlashCommandBuilder, GatewayIntentBits, Partials } from 'discord.js';
 
 const client = new Client({
     intents: [
@@ -9,7 +9,11 @@ const client = new Client({
         GatewayIntentBits.GuildMessages, 
         GatewayIntentBits.GuildMembers, 
         GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.DirectMessages
+    ],
+    partials: [
+        Partials.Channel
     ]
 });
 
@@ -26,6 +30,8 @@ client.once(Events.ClientReady, readyClient => {
     const invert = new SlashCommandBuilder()
         .setName('inversion')
         .setDescription('Inverts the message you send')
+        .setIntegrationTypes([0, 1])
+        .setContexts([0, 1, 2])
         .addStringOption(option =>
             option.setName('message')
                 .setDescription('The message to be inverted')
@@ -47,18 +53,8 @@ client.on(Events.InteractionCreate, interaction => {
     if (interaction.commandName === 'inversion') {
         const message = interaction.options.get('message').value;
         
-        let stack = [];
-        let invertedMessage = "";
-        
-        // Add characters in message to stack
-        for (const char of message) {
-            stack.push(char);
-        }
-
-        // Reverse order of characters from message
-        for (let char = 0; stack.length; char++) {
-            invertedMessage += stack.pop();
-        }
+        // Reverse string
+        let invertedMessage = message.split("").reverse().join("");
 
         interaction.reply(invertedMessage);
     }
