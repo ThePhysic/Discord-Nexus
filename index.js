@@ -1,7 +1,8 @@
+import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { Client, Events, SlashCommandBuilder, GatewayIntentBits, Partials, InteractionCallback} from 'discord.js';
+import { Client, Events, SlashCommandBuilder, GatewayIntentBits, Partials} from 'discord.js';
 
 const client = new Client({
     intents: [
@@ -23,6 +24,31 @@ const LINK_REGEX = /https:\/\/discord.com\/channels\/(@me|\d{19})\/(\d{18}|\d{19
 const THREAD_TITLE_REGEX = /(?<=\*\*)(.*?)(?=\*\*)/;
 let THREAD_CONFIRMATION_ID = '';
 let ARCHIVED_THREAD = '';
+const MIRROR_USER = process.env.USER1_MARVIN_EMAIL + ', ' + process.env.USER2_MARVIN_EMAIL;
+const usersMap = new Map([
+    [process.env.USER1_ID, process.env.USER1_MARVIN_EMAIL],
+    [process.env.USER2_ID, process.env.USER2_MARVIN_EMAIL]
+]);
+
+// Configure Nodemailer
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.NEXUS_EMAIL,
+        pass: process.env.NEXUS_PASSWORD
+    }
+});
+
+// Task creation function 
+function createTask(user, task) {
+    const mailOptions = {
+        from: process.env.NEXUS_EMAIL,
+        to: user,
+        subject: task
+    };
+
+    return mailOptions;
+}
 
 // Confirm bot is logged in
 client.once(Events.ClientReady, readyClient => {
@@ -37,27 +63,28 @@ client.once(Events.ClientReady, readyClient => {
     const invert = new SlashCommandBuilder()
         .setName('inversion')
         .setDescription('Inverts the message you send')
-        .setIntegrationTypes([0, 1])
-        .setContexts([0, 1, 2])
         .addStringOption(option =>
             option.setName('message')
                 .setDescription('The message to be inverted')
                 .setRequired(true));
-    
-    // Create talking point slash command
-    const talkingPoint = new SlashCommandBuilder()
-        .setName('tp')
-        .setDescription('Sends talking point to talking point channel')
-        .setIntegrationTypes([0, 1])
-        .setContexts([0, 1, 2])
+
+    // Create task creation slash command
+    const addTask = new SlashCommandBuilder()
+        .setName('addtask')
+        .setDescription('Adds task to Marvin')
         .addStringOption(option =>
-            option.setName('link')
-                .setDescription('The message link to be sent')
-                .setRequired(true)); 
+            option.setName('task')
+                .setDescription('The task to be added')
+                .setRequired(true))
+        .addBooleanOption(option => 
+            option.setName('mirror')
+                .setDescription('If task should show up for both users')
+                .setRequired(true))
+     
     
     client.application.commands.create(ping);
     client.application.commands.create(invert);
-    client.application.commands.create(talkingPoint);
+    client.application.commands.create(addTask);
 
 });
 
@@ -77,6 +104,29 @@ client.on(Events.InteractionCreate, interaction => {
         let invertedMessage = message.split('').reverse().join('');
 
         interaction.reply(invertedMessage);
+    }
+
+    // Task creation slash command
+    if (interaction.commandName === 'addtask') {
+
+        const task = interaction.options.get('task').value;
+        const mirror = interaction.options.get('mirror').value; 
+        const user = mirror ? MIRROR_USER : usersMap.get(interaction.user.id); 
+
+        // Create task
+        const mailOptions = createTask(user, task);
+
+        // Send task to Marvin
+        transporter.sendMail(mailOptions, function(error, info) {
+            if (error) {
+                console.log(error);
+                interaction.reply('Error sending email');
+            }
+            else  { 
+                console.log('Email sent: ' + info.response);
+                interaction.reply('Email sent');
+            }
+        });
     }
 })
 
@@ -102,7 +152,7 @@ client.on(Events.ThreadCreate, async (thread) => {
 
 // Listen for threads being archived
 client.on(Events.ThreadUpdate, (oldThread, newThread) => {
-    if (oldThread.archived === false && newThread.archived === true) {
+    if (!oldThread.archived && newThread.archived) {
         console.log(`Thread ${newThread.name} has been archived`);
 
         // Bot sends confirmation message for archiving thread
@@ -127,6 +177,27 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
         // Check the reaction emoji for thread archival confirmation
         if (emoji === '👍') {
             parentChannel.send(`You've confirmed the archival of the thread`);
+
+            // Create message link
+            const messageLink = `https://discord.com/channels/${reaction.message.guildId}/${reaction.message.channelId}/${reaction.message.id}`;
+
+            const processingTask = `Process ${ARCHIVED_THREAD.name} in Monolith: ${messageLink} #"⏳ Productivity" +today ~10m @Processing`;
+
+            // Create processing task
+            const mailOptions = createTask(MIRROR_USER, processingTask);
+
+            // Send thread processing task to Marvin
+            transporter.sendMail(mailOptions, function(error, info) {
+                if (error) {
+                    console.log(error);
+                    parentChannel.send('Error sending email');
+                }
+                else  {
+                    console.log('Email sent: ' + info.response);
+                    parentChannel.send('Email sent');
+                }
+            });
+
         }
         else if (emoji === '👎') {
             parentChannel.send(`You've elected to reopen the thread`);
