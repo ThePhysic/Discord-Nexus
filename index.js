@@ -23,6 +23,7 @@ const client = new Client({
 // Global  variables
 const MESSAGE_LINK_REGEX = /https:\/\/discord.com\/channels\/(@me|\d{19})\/(\d{18}|\d{19})\/(\d{19})/;
 const THREAD_TITLE_REGEX = /(?<=\*\*)(.*?)(?=\*\*)/;
+const LINE_REGEX = /\r\n|\r|\n/;
 const MESSAGE_TRACKER_REGEX = /\*\*<==== Monolith Message Block Tracker ====>\*\*/;
 const MESSAGE_TRACKER_TITLE = '**<==== Monolith Message Block Tracker ====>**';
 const MIRROR_USER = process.env.USER1_MARVIN_EMAIL + ', ' + process.env.USER2_MARVIN_EMAIL;
@@ -55,7 +56,6 @@ function getMailOptions(user, task) {
         to: user,
         subject: task
     };
-
     return mailOptions;
 }
 
@@ -77,7 +77,6 @@ function getDetailsForTaskCreation(interaction) {
     const task = interaction.options.get('task').value;
     const mirror = interaction.options.get('mirror').value; 
     const user = mirror ? MIRROR_USER : usersInfo[interaction.user.id]; 
-
     return {
         user: user, 
         task: task
@@ -86,17 +85,16 @@ function getDetailsForTaskCreation(interaction) {
 
 function getTargetChannel(chatId) {
     const channel = client.channels.cache.get(chatId);
-
     return channel;
 }
 
 function deconstructMessageLink(messageLink) {
-    const identifiers = messageLink.split('/');
-    const guildId = identifiers[4];
-    const channelId = identifiers[5];
-    const messageId = identifiers[6];
-
-    return [guildId, channelId, messageId];
+    const [guildId, channelId, messageId] = messageLink.split('/').slice(4);
+    return {
+        guildId: guildId, 
+        channelId: channelId, 
+        messageId: messageId
+    };
 }
 
 async function fetchMessageFromLink(guildId, channelId, messageId) {
@@ -114,7 +112,6 @@ async function fetchMessageFromLink(guildId, channelId, messageId) {
     if (!reviewMessage) {
         interaction.reply('Message not found');
     }
-
     return reviewMessage;
 }
 
@@ -126,11 +123,16 @@ async function getMessageInfo(message) {
     const result = isPromise(message) ? await message : message;
     const messageDate = result.createdAt.toLocaleString();
     const messageAuthorId = result.author.id
-
     return {
         messageDate: messageDate,
         messageAuthorId: messageAuthorId
     }
+}
+
+async function getPins() {
+    const generalChat = getTargetChannel(process.env.GENERAL_CHAT_ID);
+    const pins = await generalChat.messages.fetchPinned();
+    return pins;
 }
 
 async function checkPinsForMessageTracker(pins) {
@@ -151,29 +153,24 @@ function checkForMessageTracker() {
     return false;
 }
 
-function getPositionToAddReviewer(tempMessageTrackerContentArray, review, reviewerMention) {
-    const index = tempMessageTrackerContentArray.findIndex(elem => elem === '');
-    tempMessageTrackerContentArray[index] = `\n${reviewerMention} \n${review}\n`;
+function getPositionToAddReviewer(currentMessageTrackerContentByLineArray, review, reviewerMention) {
+    const index = currentMessageTrackerContentByLineArray.findIndex(elem => elem === '');
+    currentMessageTrackerContentByLineArray[index] = `\n${reviewerMention} \n${review}\n`;
 }
 
-function getPositionToAddReviewOne(tempMessageTrackerContentArray, review) {
-    const index = tempMessageTrackerContentArray.findIndex(elem => elem === '');
-    tempMessageTrackerContentArray[index] = `${review}\n`;
+function getPositionToAddReviewOne(currentMessageTrackerContentByLineArray, review) {
+    const index = currentMessageTrackerContentByLineArray.findIndex(elem => elem === '');
+    currentMessageTrackerContentByLineArray[index] = `${review}\n`;
 }
 
-function getPositionToAddReviewTwo(tempMessageTrackerContentArray, review) {
-    const index = tempMessageTrackerContentArray.findLastIndex(elem => elem === '');
-    tempMessageTrackerContentArray[index] = `${review}\n`;
+function getPositionToAddReviewTwo(currentMessageTrackerContentByLineArray, review) {
+    const index = currentMessageTrackerContentByLineArray.findLastIndex(elem => elem === '');
+    currentMessageTrackerContentByLineArray[index] = `${review}\n`;
 }
 
 // Confirm bot is logged in
 client.once(Events.ClientReady, async (readyClient) => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
-
-    // Create ping slash command
-    const ping = new SlashCommandBuilder()
-        .setName('ping')
-        .setDescription('Replies with Pong!')
     
     // Create inversion slash command
     const invert = new SlashCommandBuilder()
@@ -210,25 +207,18 @@ client.once(Events.ClientReady, async (readyClient) => {
                 .setDescription('The last date all messages were caught up on'));
      
     // Register slash commands 
-    client.application.commands.create(ping);
     client.application.commands.create(invert);
     client.application.commands.create(addTask);
     client.application.commands.create(review);
 
     // Check if message tracker is already in pins
-    const generalChat = getTargetChannel(process.env.GENERAL_CHAT_ID);
-    const pins = await generalChat.messages.fetchPinned();
+    const pins = await getPins();
     MESSAGE_TRACKER_ID = await checkPinsForMessageTracker(pins);
-    console.log(`Here's MESSAGE_TRACKER_ID at startup: ${MESSAGE_TRACKER_ID}`);
+    console.log(`Here's MESSAGE_TRACKER_ID at startup: ${MESSAGE_TRACKER_ID}`); 
 });
 
 // Listen for slash commands
 client.on(Events.InteractionCreate, async (interaction) => {
-
-    // Ping slash command
-    if (interaction.commandName === 'ping') {
-        interaction.reply('Pong!');
-    }
 
     // Inversion slash command
     if (interaction.commandName === 'inversion') {
@@ -242,7 +232,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     // Task creation slash command
     if (interaction.commandName === 'addtask') {
-
         const { user, task } = getDetailsForTaskCreation(interaction);
 
         // Format email
@@ -251,7 +240,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         // Send task to Marvin
         const errorOccured = sendTask(mailOptions);
 
-        errorOccured ? interaction.reply('Error sending email') : interaction.reply('Email sent');
+        const responseMessage = errorOccured ? 'Error sending email' : 'Email sent';
+        interaction.reply(responseMessage);
     }
 
     // Review slash command
@@ -260,9 +250,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const generalChat = getTargetChannel(process.env.GENERAL_CHAT_ID);
         
         if (MESSAGE_LINK_REGEX.test(messageLink)) {
-
             // Deconstruct message link
-            const [guildId, channelId, messageId] = deconstructMessageLink(messageLink);
+            const { guildId, channelId, messageId } = deconstructMessageLink(messageLink);
 
             try {
                 // Fetch message associated with message link
@@ -277,7 +266,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const messageTrackerExists = checkForMessageTracker();
 
                 // Create reviewer mention
-                const reviewer = `<@${reviewerId}`; // CHANGE SO IT PINGS USER
+                const reviewer = `<@${reviewerId}>`;
 
                 // Format reviewer mention
                 const reviewerMention = `**For ${reviewer}:**`;
@@ -304,33 +293,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const messageTracker = await generalChat.messages.fetch(MESSAGE_TRACKER_ID);
 
                 // Grab current message tracker reviews 
-                const tempMessageTrackerContent = messageTracker.content;
+                const currentMessageTrackerContent = messageTracker.content;
 
                 // Check if reviewer already has reviews in message tracker
-                const userIsAlreadyReviewer = checkForMatchInMessage(tempMessageTrackerContent, reviewerId);
+                const userIsAlreadyReviewer = checkForMatchInMessage(currentMessageTrackerContent, reviewerId);
 
-                // Split current message tracker reviews by line
-                const tempMessageTrackerContentArray = tempMessageTrackerContent.split(/\r\n|\r|\n/);
+                // Split current message tracker reviews line by line
+                const currentMessageTrackerContentByLineArray = currentMessageTrackerContent.split(LINE_REGEX);
 
                 // New reviewer added to message tracker 
                 if (!userIsAlreadyReviewer) {
-                    getPositionToAddReviewer(tempMessageTrackerContentArray, review, reviewerMention);
-                    messageTracker.edit(tempMessageTrackerContentArray.join('\n'));
+                    getPositionToAddReviewer(currentMessageTrackerContentByLineArray, review, reviewerMention);
+                    messageTracker.edit(currentMessageTrackerContentByLineArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
 
                 // Reviewer is second block
-                if (tempMessageTrackerContentArray[1] !== reviewerMention) {
-                    getPositionToAddReviewTwo(tempMessageTrackerContentArray, review);
-                    messageTracker.edit(tempMessageTrackerContentArray.join('\n'));
+                if (currentMessageTrackerContentByLineArray[1] !== reviewerMention) {
+                    getPositionToAddReviewTwo(currentMessageTrackerContentByLineArray, review);
+                    messageTracker.edit(currentMessageTrackerContentByLineArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
         
                 // Reviewer is first block
-                getPositionToAddReviewOne(tempMessageTrackerContentArray, review);
-                messageTracker.edit(tempMessageTrackerContentArray.join('\n'));
+                getPositionToAddReviewOne(currentMessageTrackerContentByLineArray, review);
+                messageTracker.edit(currentMessageTrackerContentByLineArray.join('\n'));
                 interaction.reply('Review added!');
             } 
             catch (error) {
@@ -365,7 +354,6 @@ client.on(Events.ThreadCreate, async (thread) => {
 // Listen for threads being archived
 client.on(Events.ThreadUpdate, (oldThread, newThread) => {
     if (!oldThread.archived && newThread.archived) {
-        console.log(`Thread has been archived`);
         console.log(`Thread ${newThread.name} has been archived`);
 
         // Bot sends confirmation message for archiving thread
@@ -373,21 +361,19 @@ client.on(Events.ThreadUpdate, (oldThread, newThread) => {
         parentChannel.send(`Are you sure you want to archive ${newThread.name}? Confirm you've finished all discussions`).then(msg => {
             THREAD_CONFIRMATION_ID = msg.id;
         });
-
         ARCHIVED_THREAD = newThread;
     }
 });
 
 // Listen for reactions to messages
 client.on(Events.MessageReactionAdd, async (reaction) => {
+    // Get the emoji
+    const emoji = reaction.emoji.name;
+        
+    const parentChannel = reaction.message.channel;
+
     // Check if message reacted to is from bot
     if (reaction.message.author.id === client.user.id && reaction.message.id === THREAD_CONFIRMATION_ID) {
-        console.log(`Reaction confirmed on bot message`);
-        // Get the emoji
-        const emoji = reaction.emoji.name;
-        
-        const parentChannel = reaction.message.channel;
-
         // Check the reaction emoji for thread archival confirmation
         if (emoji === '👍') {
             parentChannel.send(`You've confirmed the archival of the thread`);
@@ -397,12 +383,13 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
             const processingTask = `Process ${ARCHIVED_THREAD.name} in Monolith: ${ARCHIVED_THREAD.url} +${dayOfTheWeek} ~15m @Processing`;
 
             // Format email
-            const mailOptions = getMailOptions(process.env.USER2_MARVIN_EMAIL, processingTask);  // CHANGE TO MIRROR_USER
+            const mailOptions = getMailOptions(MIRROR_USER, processingTask);
 
             // Send thread processing task to Marvin
             const errorOccured = sendTask(mailOptions);
 
-            errorOccured ? parentChannel.send('Error sending email') : parentChannel.send('Email sent');
+            const responseMessage = errorOccured ? 'Error sending email' : 'Email sent';
+            parentChannel.send(responseMessage);
         }
         else if (emoji === '👎') {
             parentChannel.send(`You've elected to reopen the thread`);
@@ -410,8 +397,7 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
         }
     }
 
-    const emoji = reaction.emoji.name;
-    const parentChannel = reaction.message.channel;
+    // Check if message reacted to is message tracker
     if (reaction.message.id === MESSAGE_TRACKER_ID && emoji === '✅') {
         parentChannel.send(`You've confirmed completing the message tracker`).then(msg => {
             CLEAN_MESSAGE_DATE = msg.createdAt.toLocaleString();
