@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { isPromise } from 'util/types';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -25,6 +26,8 @@ const THREAD_TITLE_REGEX = /(?<=\*\*)(.*?)(?=\*\*)/;
 const MESSAGE_TRACKER_REGEX = /\*\*<==== Monolith Message Block Tracker ====>\*\*/;
 const MESSAGE_TRACKER_TITLE = '**<==== Monolith Message Block Tracker ====>**';
 const MIRROR_USER = process.env.USER1_MARVIN_EMAIL + ', ' + process.env.USER2_MARVIN_EMAIL;
+let MESSAGE_TRACKER_ID = '';
+let CLEAN_MESSAGE_DATE = '';
 let THREAD_CONFIRMATION_ID = '';
 let ARCHIVED_THREAD = '';
 const usersInfo = {
@@ -120,7 +123,7 @@ function checkForMatchInMessage(messageContent, matchingPattern) {
 }
 
 async function getMessageInfo(message) {
-    const result = await message;
+    const result = isPromise(message) ? await message : message;
     const messageDate = result.createdAt.toLocaleString();
     const messageAuthorId = result.author.id
 
@@ -130,39 +133,41 @@ async function getMessageInfo(message) {
     }
 }
 
-async function checkPinsForMessageTracker(pins, generalChat) {
-    let messageTrackerExists = false; 
-
+async function checkPinsForMessageTracker(pins) {
     for (const msg of pins.values()) {
         const messageTrackerMatch = checkForMatchInMessage(msg.content, MESSAGE_TRACKER_REGEX);
-        console.log(`Herre's messageTrackerMatch: ${messageTrackerMatch}`);
         if (messageTrackerMatch && messageTrackerMatch[0]) {
-            messageTrackerExists = true;
-            const messageTrackerId = msg.id;
-            console.log(`WE'RE IN`);
-            const messageTracker = await generalChat.messages.fetch(messageTrackerId);
-            console.log(`Here's messageTracker right after the await in the function: ${messageTracker}`);
-
-            return {    
-                messageTrackerExists: messageTrackerExists, 
-                messageTracker: messageTracker
-            };
+            MESSAGE_TRACKER_ID = msg.id;
+            return true;
         }
     };
-
-    return {
-        messageTrackerExists: messageTrackerExists, 
-        messageTracker: null
-    };
+    return false;
 }
 
-function getPositionToAddReview(tempMessageTrackerContentArray) {
+function checkForMessageTracker() {
+    if (MESSAGE_TRACKER_ID) {
+        return true;
+    }
+    return false;
+}
+
+function getPositionToAddReviewer(tempMessageTrackerContentArray, review, reviewerMention) {
     const index = tempMessageTrackerContentArray.findIndex(elem => elem === '');
-    tempMessageTrackerContentArray[index] = review;
+    tempMessageTrackerContentArray[index] = `\n${reviewerMention} \n${review}\n`;
+}
+
+function getPositionToAddReviewOne(tempMessageTrackerContentArray, review) {
+    const index = tempMessageTrackerContentArray.findIndex(elem => elem === '');
+    tempMessageTrackerContentArray[index] = `${review}\n`;
+}
+
+function getPositionToAddReviewTwo(tempMessageTrackerContentArray, review) {
+    const index = tempMessageTrackerContentArray.findLastIndex(elem => elem === '');
+    tempMessageTrackerContentArray[index] = `${review}\n`;
 }
 
 // Confirm bot is logged in
-client.once(Events.ClientReady, readyClient => {
+client.once(Events.ClientReady, async (readyClient) => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
 
     // Create ping slash command
@@ -199,7 +204,10 @@ client.once(Events.ClientReady, readyClient => {
         .addStringOption(option =>
             option.setName('link')
                 .setDescription('The link to the message to be reviewed')
-                .setRequired(true));
+                .setRequired(true))
+        .addStringOption( option => 
+            option.setName('clean-date')
+                .setDescription('The last date all messages were caught up on'));
      
     // Register slash commands 
     client.application.commands.create(ping);
@@ -207,6 +215,11 @@ client.once(Events.ClientReady, readyClient => {
     client.application.commands.create(addTask);
     client.application.commands.create(review);
 
+    // Check if message tracker is already in pins
+    const generalChat = getTargetChannel(process.env.GENERAL_CHAT_ID);
+    const pins = await generalChat.messages.fetchPinned();
+    MESSAGE_TRACKER_ID = await checkPinsForMessageTracker(pins);
+    console.log(`Here's MESSAGE_TRACKER_ID at startup: ${MESSAGE_TRACKER_ID}`);
 });
 
 // Listen for slash commands
@@ -260,13 +273,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
                 const reviewerId = messageReviewer[reviewMessageAuthorId];
 
-                // Check if message tracker is already in pins
-                const pins = await generalChat.messages.fetchPinned()
-                const { messageTrackerExists, messageTracker } = await checkPinsForMessageTracker(pins, generalChat);
-                console.log(`Here's messageTracker after the function: ${messageTracker}`);
+                // Check if there is already message tracker 
+                const messageTrackerExists = checkForMessageTracker();
 
                 // Create reviewer mention
-                const reviewer = `<@${reviewerId}>`;
+                const reviewer = `<@${reviewerId}`; // CHANGE SO IT PINGS USER
 
                 // Format reviewer mention
                 const reviewerMention = `**For ${reviewer}:**`;
@@ -274,12 +285,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 // Format review to be added
                 const review = `- ${reviewMessageDate}: ${messageLink}`;
 
+                const cleanMessageDate = CLEAN_MESSAGE_DATE ? CLEAN_MESSAGE_DATE : interaction.options.get('clean-date')?.value;
+
+                // Format last clean date
+                const lastCleanDate = `**Last clean date:** ${cleanMessageDate}`;
+
                 // Messge tracker doesn't exist
                 if (!messageTrackerExists) {
-                    generalChat.send(`${MESSAGE_TRACKER_TITLE} \n${reviewerMention} \n${review}`).then((msg) => msg.pin());
+                    generalChat.send(`${MESSAGE_TRACKER_TITLE}\n${reviewerMention}\n${review}\n\n${lastCleanDate}`).then((msg) => {
+                        msg.pin();
+                        MESSAGE_TRACKER_ID = msg.id;
+                    });
                     interaction.reply('Review added!');
                     return;
                 }
+
+                // Fetch message tracker 
+                const messageTracker = await generalChat.messages.fetch(MESSAGE_TRACKER_ID);
 
                 // Grab current message tracker reviews 
                 const tempMessageTrackerContent = messageTracker.content;
@@ -287,26 +309,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 // Check if reviewer already has reviews in message tracker
                 const userIsAlreadyReviewer = checkForMatchInMessage(tempMessageTrackerContent, reviewerId);
 
+                // Split current message tracker reviews by line
+                const tempMessageTrackerContentArray = tempMessageTrackerContent.split(/\r\n|\r|\n/);
+
                 // New reviewer added to message tracker 
                 if (!userIsAlreadyReviewer) {
-                    messageTracker.edit(tempMessageTrackerContent + `\n\n${reviewerMention} \n${review}`);
+                    getPositionToAddReviewer(tempMessageTrackerContentArray, review, reviewerMention);
+                    messageTracker.edit(tempMessageTrackerContentArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
 
-                // Split current message tracker reviews by line
-                const tempMessageTrackerContentArray = tempMessageTrackerContent.split(/\r\n|\r|\n/);
-
                 // Reviewer is second block
-                if (tempMessageTrackerContentArray[1] !== reviewer) {
-                    messageTracker.edit(tempMessageTrackerContent + `\n${review}`);
+                if (tempMessageTrackerContentArray[1] !== reviewerMention) {
+                    getPositionToAddReviewTwo(tempMessageTrackerContentArray, review);
+                    messageTracker.edit(tempMessageTrackerContentArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
         
                 // Reviewer is first block
-                getPositionToAddReview(tempMessageTrackerContentArray);
-                messageTracker.edit(tempMessageTrackerContentArray.join());
+                getPositionToAddReviewOne(tempMessageTrackerContentArray, review);
+                messageTracker.edit(tempMessageTrackerContentArray.join('\n'));
                 interaction.reply('Review added!');
             } 
             catch (error) {
@@ -318,7 +342,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             interaction.reply('Invalid link. Please try again.');
         }
     }
-})
+});
 
 // Listen for threads being created
 client.on(Events.ThreadCreate, async (thread) => {
@@ -341,16 +365,14 @@ client.on(Events.ThreadCreate, async (thread) => {
 // Listen for threads being archived
 client.on(Events.ThreadUpdate, (oldThread, newThread) => {
     if (!oldThread.archived && newThread.archived) {
+        console.log(`Thread has been archived`);
         console.log(`Thread ${newThread.name} has been archived`);
 
         // Bot sends confirmation message for archiving thread
         const parentChannel = getTargetChannel(newThread.parentId);
-        parentChannel.send(`Are you sure you want to archive ${newThread.name}? Confirm you've finished all discussions`);
-
-        // Grab message id of confirmation message 
-        setTimeout(function() {
-            THREAD_CONFIRMATION_ID = parentChannel.lastMessageId;
-        }, 1000) // TEST TIME HERE
+        parentChannel.send(`Are you sure you want to archive ${newThread.name}? Confirm you've finished all discussions`).then(msg => {
+            THREAD_CONFIRMATION_ID = msg.id;
+        });
 
         ARCHIVED_THREAD = newThread;
     }
@@ -358,10 +380,9 @@ client.on(Events.ThreadUpdate, (oldThread, newThread) => {
 
 // Listen for reactions to messages
 client.on(Events.MessageReactionAdd, async (reaction) => {
-
     // Check if message reacted to is from bot
     if (reaction.message.author.id === client.user.id && reaction.message.id === THREAD_CONFIRMATION_ID) {
-
+        console.log(`Reaction confirmed on bot message`);
         // Get the emoji
         const emoji = reaction.emoji.name;
         
@@ -371,10 +392,12 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
         if (emoji === '👍') {
             parentChannel.send(`You've confirmed the archival of the thread`);
 
-            const processingTask = `Process ${ARCHIVED_THREAD.name} in Monolith: ${ARCHIVED_THREAD.url} +today ~15m @Processing`;
+            const { messageDate } = await getMessageInfo(reaction.message);
+            const dayOfTheWeek = messageDate.substring(0, 8);
+            const processingTask = `Process ${ARCHIVED_THREAD.name} in Monolith: ${ARCHIVED_THREAD.url} +${dayOfTheWeek} ~15m @Processing`;
 
             // Format email
-            const mailOptions = getMailOptions(MIRROR_USER, processingTask);  
+            const mailOptions = getMailOptions(process.env.USER2_MARVIN_EMAIL, processingTask);  // CHANGE TO MIRROR_USER
 
             // Send thread processing task to Marvin
             const errorOccured = sendTask(mailOptions);
@@ -385,6 +408,16 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
             parentChannel.send(`You've elected to reopen the thread`);
             ARCHIVED_THREAD.setArchived(false);
         }
+    }
+
+    const emoji = reaction.emoji.name;
+    const parentChannel = reaction.message.channel;
+    if (reaction.message.id === MESSAGE_TRACKER_ID && emoji === '✅') {
+        parentChannel.send(`You've confirmed completing the message tracker`).then(msg => {
+            CLEAN_MESSAGE_DATE = msg.createdAt.toLocaleString();
+            reaction.message.unpin();
+            MESSAGE_TRACKER_ID = '';
+        });
     }
 });
 
