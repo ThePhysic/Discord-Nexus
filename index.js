@@ -22,13 +22,18 @@ const client = new Client({
 // Global  variables
 const LINK_REGEX = /https:\/\/discord.com\/channels\/(@me|\d{19})\/(\d{18}|\d{19})\/(\d{19})/;
 const THREAD_TITLE_REGEX = /(?<=\*\*)(.*?)(?=\*\*)/;
+const MESSAGE_TRACKER_REGEX = /\*\*<==== Monolith Message Block Tracker ====>\*\*/;
 let THREAD_CONFIRMATION_ID = '';
 let ARCHIVED_THREAD = '';
 const MIRROR_USER = process.env.USER1_MARVIN_EMAIL + ', ' + process.env.USER2_MARVIN_EMAIL;
-const usersMap = new Map([
-    [process.env.USER1_ID, process.env.USER1_MARVIN_EMAIL],
-    [process.env.USER2_ID, process.env.USER2_MARVIN_EMAIL]
-]);
+const usersInfo = {
+    [process.env.USER1_ID]: process.env.USER1_MARVIN_EMAIL,
+    [process.env.USER2_ID]: process.env.USER2_MARVIN_EMAIL
+};
+const messageReviewIntendedUser = {
+    [process.env.USER1_ID]: process.env.USER2_ID,
+    [process.env.USER2_ID]: process.env.USER1_ID
+};
 
 // Configure Nodemailer
 const transporter = nodemailer.createTransport({
@@ -40,7 +45,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // Task creation function 
-function createTask(user, task) {
+function getMailOptions(user, task) {
     const mailOptions = {
         from: process.env.NEXUS_EMAIL,
         to: user,
@@ -80,16 +85,26 @@ client.once(Events.ClientReady, readyClient => {
             option.setName('mirror')
                 .setDescription('If task should show up for both users')
                 .setRequired(true))
+
+    // Create review slash command
+    const review = new SlashCommandBuilder()
+        .setName('review')
+        .setDescription('Adds message to message block tracker')
+        .addStringOption(option =>
+            option.setName('link')
+                .setDescription('The link to the message to be reviewed')
+                .setRequired(true));
      
     
     client.application.commands.create(ping);
     client.application.commands.create(invert);
     client.application.commands.create(addTask);
+    client.application.commands.create(review);
 
 });
 
 // Listen for slash commands
-client.on(Events.InteractionCreate, interaction => {
+client.on(Events.InteractionCreate, async (interaction) => {
 
     // Ping slash command
     if (interaction.commandName === 'ping') {
@@ -111,10 +126,10 @@ client.on(Events.InteractionCreate, interaction => {
 
         const task = interaction.options.get('task').value;
         const mirror = interaction.options.get('mirror').value; 
-        const user = mirror ? MIRROR_USER : usersMap.get(interaction.user.id); 
+        const user = mirror ? MIRROR_USER : usersInfo[interaction.user.id]; 
 
         // Create task
-        const mailOptions = createTask(user, task);
+        const mailOptions = getMailOptions(user, task);
 
         // Send task to Marvin
         transporter.sendMail(mailOptions, function(error, info) {
@@ -128,6 +143,100 @@ client.on(Events.InteractionCreate, interaction => {
             }
         });
     }
+
+    // Review slash command
+    if (interaction.commandName === 'review') {
+        const messageLink = interaction.options.get('link').value;
+        const generalChat = client.channels.cache.get(process.env.GENERAL_CHAT_ID);
+        
+        if (LINK_REGEX.test(messageLink)) {
+
+            // Deconstruct message link
+            const identifiers = messageLink.split('/');
+            const guildId = identifiers[4];
+            const channelId = identifiers[5];
+            const messageId = identifiers[6];
+
+            // Fetch message associated with message link
+            try {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) {
+                    interaction.reply('Guild not found');
+                }
+
+                const channel = guild.channels.cache.get(channelId);
+                if (!channel) {
+                    interaction.reply('Channel not found');
+                }
+
+                const reviewMessage = await channel.messages.fetch(messageId);
+                if (!reviewMessage) {
+                    interaction.reply('Message not found');
+                }
+
+                // Get date and author of message to be reviewed
+                const reviewMessageDate = reviewMessage.createdAt.toLocaleString();
+                const reviewMessageAuthorId = reviewMessage.author.id;
+
+                const messageReviewerId = messageReviewIntendedUser[reviewMessageAuthorId];
+
+                // Check if message tracker is already in pins
+                const pins = await generalChat.messages.fetchPinned()
+                let messageTrackerExists = false;
+                let messageTrackerId = ''; 
+                pins.forEach(msg => {
+                    const messageTrackerMatch = msg.content.match(MESSAGE_TRACKER_REGEX);
+                    if (messageTrackerMatch && messageTrackerMatch[0]) {
+                        messageTrackerExists = true;
+                        messageTrackerId = msg.id;
+                    }
+                });
+
+                // Messge tracker doesn't exist
+                if (!messageTrackerExists) {
+                    // CHANGE so it pings user
+                    generalChat.send(`**<==== Monolith Message Block Tracker ====>** \n**For <@${messageReviewerId}:** \n- ${reviewMessageDate}: ${messageLink}`).then((msg) => msg.pin());
+                    interaction.reply('Review added!');
+                    return;
+                }
+
+                const messageTracker = await generalChat.messages.fetch(messageTrackerId)
+                const tempMessageTrackerContent = messageTracker.content;
+                const userAsReviewerMatch = tempMessageTrackerContent.match(messageReviewerId);
+
+                // New reviewer added to block
+                if (!userAsReviewerMatch) {
+                    // CHANGE so it pings user
+                    messageTracker.edit(tempMessageTrackerContent + `\n\n**For <@${messageReviewerId}:** \n- ${reviewMessageDate}: ${messageLink}`);
+                    interaction.reply('Review added!');
+                    return;
+                }
+
+                const tempMessageTrackerContentArray = tempMessageTrackerContent.split(/\r\n|\r|\n/);
+
+                // Reviewer is second block
+                // CHANGE so it pings user
+                if (tempMessageTrackerContentArray[1] !== `<@${messageReviewerId}`) {
+                    messageTracker.edit(tempMessageTrackerContent + `\n- ${reviewMessageDate}: ${messageLink}`);
+                    interaction.reply('Review added!');
+                    return;
+                }
+        
+                // Reviewer is first block
+                const index = tempMessageTrackerContentArray.findIndex(elem => elem === '');
+                tempMessageTrackerContentArray[index] = `- ${reviewMessageDate}: ${messageLink}`;
+                messageTracker.edit(tempMessageTrackerContentArray.join());
+                interaction.reply('Review added!');
+
+            } catch (error) {
+                console.error('Error fetching message:', error)
+                interaction.reply('Failed to fetch message');
+            }
+        }
+        else {
+            interaction.reply('Invalid link. Please try again.');
+        }
+    }
 })
 
 // Listen for threads being created
@@ -135,7 +244,7 @@ client.on(Events.ThreadCreate, async (thread) => {
     console.log(`Thread created: ${thread.name} in ${thread.parent.name}`);
      
     try {
-        // Grab message thread was created
+        // Grab message thread was created from 
         const threadMessage = await thread.fetchStarterMessage();
         console.log(`Thread created from message: ${threadMessage.content}`);
 
@@ -178,13 +287,10 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
         if (emoji === '👍') {
             parentChannel.send(`You've confirmed the archival of the thread`);
 
-            // Create message link
-            const messageLink = `https://discord.com/channels/${reaction.message.guildId}/${reaction.message.channelId}/${reaction.message.id}`;
-
-            const processingTask = `Process ${ARCHIVED_THREAD.name} in Monolith: ${messageLink} #"⏳ Productivity" +today ~10m @Processing`;
+            const processingTask = `Process ${ARCHIVED_THREAD.name} in Monolith: ${ARCHIVED_THREAD.url} +today ~15m @Processing`;
 
             // Create processing task
-            const mailOptions = createTask(MIRROR_USER, processingTask);
+            const mailOptions = getMailOptions(process.env.USER2_MARVIN_EMAIL, processingTask); // CHANGE
 
             // Send thread processing task to Marvin
             transporter.sendMail(mailOptions, function(error, info) {
