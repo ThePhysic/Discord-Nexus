@@ -68,7 +68,7 @@ Feel free to fork this repo and change the code however you like! Make a pull re
 
   - When a message thread is closed manually or due to inactivity, the bot will send a messages to confirm if you're finished talking in the thread.
   - If you react with a thumbs down emoji the thread will be reopened.
-  - If you react with a thumbs up emoji, the thread will stay closed and a new task will be created in both users Amazing marvin to process the messages in your thread (in case you had any enlightening discussion or valuable insights come about in the thread. 
+  - If you react with a thumbs up emoji, the thread will stay closed and a new task will be created in both user's Amazing marvin to process the messages in your thread (in case you had any enlightening discussion or valuable insights come about in the thread. 
 </details>
 
 <details>
