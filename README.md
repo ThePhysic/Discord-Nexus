@@ -1,6 +1,6 @@
 # About
 
-Discord Butler is a Discord Bot using Discord.js v13.
+Discord Nexus is a Discord Bot using Discord.js v14.
 
 Implements several quality-of-life improvements in enhancing the user experience. 
 
