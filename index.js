@@ -1,5 +1,4 @@
 import nodemailer from 'nodemailer';
-import { isPromise } from 'util/types';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -28,6 +27,7 @@ const MESSAGE_TRACKER_REGEX = /\*\*<==== Monolith Message Block Tracker ====>\*\
 const MESSAGE_TRACKER_TITLE = '**<==== Monolith Message Block Tracker ====>**';
 const MIRROR_USER = process.env.USER1_MARVIN_EMAIL + ', ' + process.env.USER2_MARVIN_EMAIL;
 let MESSAGE_TRACKER_ID = '';
+let MESSAGE_TRACKER_EXISTS = false;
 let CLEAN_MESSAGE_DATE = '';
 let THREAD_CONFIRMATION_ID = '';
 let ARCHIVED_THREAD = '';
@@ -91,9 +91,9 @@ function getTargetChannel(chatId) {
 function deconstructMessageLink(messageLink) {
     const [guildId, channelId, messageId] = messageLink.split('/').slice(4);
     return {
-        guildId: guildId, 
-        channelId: channelId, 
-        messageId: messageId
+        guildId, 
+        channelId, 
+        messageId
     };
 }
 
@@ -120,7 +120,7 @@ function checkForMatchInMessage(messageContent, matchingPattern) {
 }
 
 async function getMessageInfo(message) {
-    const result = isPromise(message) ? await message : message;
+    const result = await message;
     const messageDate = result.createdAt.toLocaleString();
     const messageAuthorId = result.author.id
     return {
@@ -147,25 +147,20 @@ async function checkPinsForMessageTracker(pins) {
 }
 
 function checkForMessageTracker() {
-    if (MESSAGE_TRACKER_ID) {
-        return true;
-    }
-    return false;
+    return MESSAGE_TRACKER_ID !== '';
 }
 
-function getPositionToAddReviewer(currentMessageTrackerContentByLineArray, review, reviewerMention) {
-    const index = currentMessageTrackerContentByLineArray.findIndex(elem => elem === '');
-    currentMessageTrackerContentByLineArray[index] = `\n${reviewerMention} \n${review}\n`;
+function getPositionToAddReview(messageByLineArray, isFirstBlock = true) {
+    const index = isFirstBlock ? messageByLineArray.findIndex(elem => elem === '') : messageByLineArray.findLastIndex(elem => elem === '');
+    return index;
 }
 
-function getPositionToAddReviewOne(currentMessageTrackerContentByLineArray, review) {
-    const index = currentMessageTrackerContentByLineArray.findIndex(elem => elem === '');
-    currentMessageTrackerContentByLineArray[index] = `${review}\n`;
+function addReviewAndReviewer(messageByLineArray, indexToAddReviewAndReviewer, review, reviewerMention) {
+    messageByLineArray[indexToAddReviewAndReviewer] = `\n${reviewerMention} \n${review}\n`;
 }
 
-function getPositionToAddReviewTwo(currentMessageTrackerContentByLineArray, review) {
-    const index = currentMessageTrackerContentByLineArray.findLastIndex(elem => elem === '');
-    currentMessageTrackerContentByLineArray[index] = `${review}\n`;
+function addReview(messageByLineArray, indexToAddReview, review) {
+    messageByLineArray[indexToAddReview] += `${review}\n`;
 }
 
 // Confirm bot is logged in
@@ -213,8 +208,8 @@ client.once(Events.ClientReady, async (readyClient) => {
 
     // Check if message tracker is already in pins
     const pins = await getPins();
-    MESSAGE_TRACKER_ID = await checkPinsForMessageTracker(pins);
-    console.log(`Here's MESSAGE_TRACKER_ID at startup: ${MESSAGE_TRACKER_ID}`); 
+    MESSAGE_TRACKER_EXISTS = await checkPinsForMessageTracker(pins);
+    console.log(`Here's MESSAGE_TRACKER_EXISTS at startup: ${MESSAGE_TRACKER_EXISTS}`); 
 });
 
 // Listen for slash commands
@@ -263,10 +258,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const reviewerId = messageReviewer[reviewMessageAuthorId];
 
                 // Check if there is already message tracker 
-                const messageTrackerExists = checkForMessageTracker();
+                const MESSAGE_TRACKER_EXISTS = checkForMessageTracker();
 
                 // Create reviewer mention
-                const reviewer = `<@${reviewerId}>`;
+                const reviewer = `<@${reviewerId}>`; 
 
                 // Format reviewer mention
                 const reviewerMention = `**For ${reviewer}:**`;
@@ -274,13 +269,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 // Format review to be added
                 const review = `- ${reviewMessageDate}: ${messageLink}`;
 
-                const cleanMessageDate = CLEAN_MESSAGE_DATE ? CLEAN_MESSAGE_DATE : interaction.options.get('clean-date')?.value;
+                const cleanMessageDate = CLEAN_MESSAGE_DATE || interaction.options.get('clean-date')?.value;
 
                 // Format last clean date
                 const lastCleanDate = `**Last clean date:** ${cleanMessageDate}`;
 
                 // Messge tracker doesn't exist
-                if (!messageTrackerExists) {
+                if (!MESSAGE_TRACKER_EXISTS) {
                     generalChat.send(`${MESSAGE_TRACKER_TITLE}\n${reviewerMention}\n${review}\n\n${lastCleanDate}`).then((msg) => {
                         msg.pin();
                         MESSAGE_TRACKER_ID = msg.id;
@@ -293,33 +288,39 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const messageTracker = await generalChat.messages.fetch(MESSAGE_TRACKER_ID);
 
                 // Grab current message tracker reviews 
-                const currentMessageTrackerContent = messageTracker.content;
+                const messageTrackerContent = messageTracker.content;
 
                 // Check if reviewer already has reviews in message tracker
-                const userIsAlreadyReviewer = checkForMatchInMessage(currentMessageTrackerContent, reviewerId);
+                const userIsAlreadyReviewer = checkForMatchInMessage(messageTrackerContent, reviewerId);
 
                 // Split current message tracker reviews line by line
-                const currentMessageTrackerContentByLineArray = currentMessageTrackerContent.split(LINE_REGEX);
+                const messageTrackerContentByLineArray = messageTrackerContent.split(LINE_REGEX);
+
+                // Define non-default value for adding new reviewers and reviews
+                const isFirstBlock = false;
 
                 // New reviewer added to message tracker 
                 if (!userIsAlreadyReviewer) {
-                    getPositionToAddReviewer(currentMessageTrackerContentByLineArray, review, reviewerMention);
-                    messageTracker.edit(currentMessageTrackerContentByLineArray.join('\n'));
+                    const indexToAddReviewAndReviewer = getPositionToAddReview(messageTrackerContentByLineArray);
+                    addReviewAndReviewer(messageTrackerContentByLineArray, indexToAddReviewAndReviewer, review, reviewerMention)
+                    messageTracker.edit(messageTrackerContentByLineArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
 
                 // Reviewer is second block
-                if (currentMessageTrackerContentByLineArray[1] !== reviewerMention) {
-                    getPositionToAddReviewTwo(currentMessageTrackerContentByLineArray, review);
-                    messageTracker.edit(currentMessageTrackerContentByLineArray.join('\n'));
+                if (messageTrackerContentByLineArray[1] !== reviewerMention) {
+                    const indexToAddReview = getPositionToAddReview(messageTrackerContentByLineArray, isFirstBlock);
+                    addReview(messageTrackerContentByLineArray, indexToAddReview, review);
+                    messageTracker.edit(messageTrackerContentByLineArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
         
                 // Reviewer is first block
-                getPositionToAddReviewOne(currentMessageTrackerContentByLineArray, review);
-                messageTracker.edit(currentMessageTrackerContentByLineArray.join('\n'));
+                const indexToAddReview = getPositionToAddReview(messageTrackerContentByLineArray);
+                addReview(messageTrackerContentByLineArray, indexToAddReview, review);
+                messageTracker.edit(messageTrackerContentByLineArray.join('\n'));
                 interaction.reply('Review added!');
             } 
             catch (error) {
@@ -403,6 +404,7 @@ client.on(Events.MessageReactionAdd, async (reaction) => {
             CLEAN_MESSAGE_DATE = msg.createdAt.toLocaleString();
             reaction.message.unpin();
             MESSAGE_TRACKER_ID = '';
+            MESSAGE_TRACKER_EXISTS = false;
         });
     }
 });
