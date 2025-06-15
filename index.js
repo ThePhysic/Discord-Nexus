@@ -74,7 +74,7 @@ function sendTask(mailOptions) {
 }
 
 function getDetailsForTaskCreation(interaction) {
-    const task = interaction.options.get('task').value;
+    const task = `${interaction.options.get('task').value} @processing`;
     const mirror = interaction.options.get('mirror').value; 
     const user = mirror ? MIRROR_USER : usersInfo[interaction.user.id]; 
     return {
@@ -150,17 +150,17 @@ function checkForMessageTracker() {
     return MESSAGE_TRACKER_ID !== '';
 }
 
-function getPositionToAddReview(messageByLineArray, isFirstBlock = true) {
-    const index = isFirstBlock ? messageByLineArray.findIndex(elem => elem === '') : messageByLineArray.findLastIndex(elem => elem === '');
+function getPositionToAddReview(reviewInfo, isFirstBlock = true) {
+    const index = isFirstBlock ? reviewInfo.messageTrackerByLineArray.findIndex(elem => elem === '') : reviewInfo.messageTrackerByLineArray.findLastIndex(elem => elem === '');
     return index;
 }
 
-function addReviewAndReviewer(messageByLineArray, indexToAddReviewAndReviewer, review, reviewerMention) {
-    messageByLineArray[indexToAddReviewAndReviewer] = `\n${reviewerMention} \n${review}\n`;
+function addReviewAndReviewer(reviewInfo, indexToAddReviewAndReviewer) {
+    reviewInfo.messageTrackerByLineArray[indexToAddReviewAndReviewer] = `\n${reviewInfo.reviewerMention} \n${reviewInfo.review}\n`;
 }
 
-function addReview(messageByLineArray, indexToAddReview, review) {
-    messageByLineArray[indexToAddReview] += `${review}\n`;
+function addReview(reviewInfo, indexToAddReview) {
+    reviewInfo.messageTrackerByLineArray[indexToAddReview] += `${reviewInfo.review}\n`;
 }
 
 // Confirm bot is logged in
@@ -287,40 +287,41 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 // Fetch message tracker 
                 const messageTracker = await generalChat.messages.fetch(MESSAGE_TRACKER_ID);
 
-                // Grab current message tracker reviews 
-                const messageTrackerContent = messageTracker.content;
-
                 // Check if reviewer already has reviews in message tracker
-                const userIsAlreadyReviewer = checkForMatchInMessage(messageTrackerContent, reviewerId);
+                const userIsAlreadyReviewer = checkForMatchInMessage(messageTracker.content, reviewerId);
 
                 // Split current message tracker reviews line by line
-                const messageTrackerContentByLineArray = messageTrackerContent.split(LINE_REGEX);
+                const messageTrackerByLineArray = messageTracker.content.split(LINE_REGEX);
 
-                // Define non-default value for adding new reviewers and reviews
-                const isFirstBlock = false;
+                // Define review info object for passing to functions
+                const reviewInfo = {
+                    messageTrackerByLineArray,
+                    review, 
+                    reviewerMention
+                };
 
                 // New reviewer added to message tracker 
                 if (!userIsAlreadyReviewer) {
-                    const indexToAddReviewAndReviewer = getPositionToAddReview(messageTrackerContentByLineArray);
-                    addReviewAndReviewer(messageTrackerContentByLineArray, indexToAddReviewAndReviewer, review, reviewerMention)
-                    messageTracker.edit(messageTrackerContentByLineArray.join('\n'));
+                    const indexToAddReviewAndReviewer = getPositionToAddReview(reviewInfo);
+                    addReviewAndReviewer(reviewInfo, indexToAddReviewAndReviewer)
+                    messageTracker.edit(reviewInfo.messageTrackerByLineArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
 
                 // Reviewer is second block
-                if (messageTrackerContentByLineArray[1] !== reviewerMention) {
-                    const indexToAddReview = getPositionToAddReview(messageTrackerContentByLineArray, isFirstBlock);
-                    addReview(messageTrackerContentByLineArray, indexToAddReview, review);
-                    messageTracker.edit(messageTrackerContentByLineArray.join('\n'));
+                if (reviewInfo.messageTrackerByLineArray[1] !== reviewerMention) {
+                    const indexToAddReview = getPositionToAddReview(reviewInfo, /*isFirstBlock=*/false);
+                    addReview(reviewInfo, indexToAddReview);
+                    messageTracker.edit(reviewInfo.messageTrackerByLineArray.join('\n'));
                     interaction.reply('Review added!');
                     return;
                 }
         
                 // Reviewer is first block
-                const indexToAddReview = getPositionToAddReview(messageTrackerContentByLineArray);
-                addReview(messageTrackerContentByLineArray, indexToAddReview, review);
-                messageTracker.edit(messageTrackerContentByLineArray.join('\n'));
+                const indexToAddReview = getPositionToAddReview(reviewInfo);
+                addReview(reviewInfo, indexToAddReview);
+                messageTracker.edit(reviewInfo.messageTrackerByLineArray.join('\n'));
                 interaction.reply('Review added!');
             } 
             catch (error) {
